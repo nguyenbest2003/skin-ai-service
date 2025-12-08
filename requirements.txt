@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-multipart
+Pillow
+numpy
+torch
+torchvision
+opencv-python-headless
+mediapipe
+google-generativeai
+python-dotenv
