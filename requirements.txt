@@ -6,6 +6,5 @@ numpy
 torch
 torchvision
 opencv-python-headless
-mediapipe
 google-generativeai
 python-dotenv
