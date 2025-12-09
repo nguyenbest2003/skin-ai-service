@@ -250,6 +250,21 @@ async def ai_suggestion(payload: dict):
 
     return {"goi_y_AI": offline}
 
+
+@app.get("/debug-models")
+def debug_models():
+    try:
+        models = genai.list_models()
+        result = []
+        for m in models:
+            result.append({
+                "name": m.name,
+                "supported_generation_methods": m.supported_generation_methods
+            })
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/")
 def home():
     return {"status":"ok","v":"skin-ai"}
