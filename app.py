@@ -210,18 +210,13 @@ async def ai_suggestion(payload: dict):
         prompt += "Hãy phân tích theo từng vùng (face zone). "
     prompt += "Trả lời ngắn gọn, rõ ràng, tiếng Việt, có routine sáng/tối."
 
-    # ================================
-    # 1) GEMINI 2.0 FLASH LITE PREVIEW
-    # ================================
     try:
         model = genai.GenerativeModel("models/gemini-2.0-flash-lite-preview")
         res = model.generate_content(prompt)
         if hasattr(res, "text") and res.text:
             return {"goi_y_AI": res.text}
-    except ResourceExhausted:
-        print(">>> Flash Lite hết quota → fallback Flash")
     except Exception as e:
-        print(">>> Flash Lite lỗi → fallback:", e)
+        print(">>> Flash Lite Preview lỗi → fallback Flash:", e)
 
     try:
         model2 = genai.GenerativeModel("models/gemini-2.0-flash")
@@ -229,15 +224,15 @@ async def ai_suggestion(payload: dict):
         if hasattr(res2, "text") and res2.text:
             return {"goi_y_AI": res2.text}
     except Exception as e:
-        print(">>> Flash lỗi → fallback Thinking:", e)
+        print(">>> Flash lỗi → fallback 2.5 Flash:", e)
 
     try:
-        model3 = genai.GenerativeModel("models/gemini-2.0-flash-thinking")
+        model3 = genai.GenerativeModel("models/gemini-2.5-flash")
         res3 = model3.generate_content(prompt)
         if hasattr(res3, "text") and res3.text:
             return {"goi_y_AI": res3.text}
     except Exception as e:
-        print(">>> Pro lỗi → fallback offline:", e)
+        print(">>> 2.5 Flash lỗi → offline:", e)
 
     offline = (
         "AI hiện không khả dụng — gợi ý cơ bản:\n"
@@ -249,21 +244,6 @@ async def ai_suggestion(payload: dict):
     )
 
     return {"goi_y_AI": offline}
-
-
-@app.get("/debug-models")
-def debug_models():
-    try:
-        models = genai.list_models()
-        result = []
-        for m in models:
-            result.append({
-                "name": m.name,
-                "supported_generation_methods": m.supported_generation_methods
-            })
-        return result
-    except Exception as e:
-        return {"error": str(e)}
 
 @app.get("/")
 def home():
