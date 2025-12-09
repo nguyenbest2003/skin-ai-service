@@ -3,22 +3,15 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-from dotenv import load_dotenv
 import numpy as np
-import cv2, os, uuid, io, json, datetime, time
+import cv2, os, uuid, io, json, datetime
 from PIL import Image
+import random
 import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
-
 
 # -------------------------
 # Setup
 # -------------------------
-load_dotenv()
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
-
 app = FastAPI(title="Skin Analyzer Lite v6")
 app.add_middleware(
     CORSMiddleware,
@@ -38,9 +31,19 @@ def make_dir(aid):
     p.mkdir(exist_ok=True)
     return p
 
-# --------------------------------
-# ANALYSIS HELPERS (no ML)
-# --------------------------------
+# -------------------------
+# AI KEY ROTATION
+# -------------------------
+def get_random_api_key():
+    keys_raw = os.getenv("GEMINI_KEYS", "")
+    keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
+    if not keys:
+        raise Exception("Thiếu GEMINI_KEYS trong Railway Variables")
+    return random.choice(keys)
+
+# -------------------------
+# ANALYSIS HELPERS
+# -------------------------
 def acne_score(np_bgr, mask):
     ycrcb = cv2.cvtColor(np_bgr, cv2.COLOR_BGR2YCrCb)
     cr = cv2.bitwise_and(ycrcb[:,:,1], ycrcb[:,:,1], mask=mask)
@@ -96,9 +99,6 @@ FALLBACK_ZONES = {
     "chin": (0.3,0.65,0.4,0.25)
 }
 
-# -------------------------
-# SUMMARY + SKIN TYPE
-# -------------------------
 def summarize(ac, rd, oil, pore_):
     out=[]
     out.append("Da có nhiều mụn." if ac>0.6 else "Da có mụn nhẹ." if ac>0.3 else "Da ít mụn.")
@@ -126,9 +126,8 @@ async def analyze_skin(file: UploadFile = File(...)):
     aid = uuid.uuid4().hex
     adir = make_dir(aid)
 
-    # save original
-    img_path = adir/"orig.jpg"
-    with open(img_path,"wb") as f: f.write(data)
+    with open(adir/"orig.jpg","wb") as f:
+        f.write(data)
 
     img = Image.open(io.BytesIO(data)).convert("RGB")
     np_bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
@@ -148,11 +147,9 @@ async def analyze_skin(file: UploadFile = File(...)):
             "pore_score": pr
         }
 
-    # global
     ac_g = np.mean([zones[z]['acne_score'] for z in zones])
     rd_g = np.mean([zones[z]['redness'] for z in zones])
-    oil_g = zones['nose']['oiliness']*0.6 + zones['forehead']['oiliness']*0.2 + \
-            (zones['left_cheek']['oiliness']+zones['right_cheek']['oiliness'])*0.1
+    oil_g = zones['nose']['oiliness']*0.6 + zones['forehead']['oiliness']*0.2 + (zones['left_cheek']['oiliness']+zones['right_cheek']['oiliness'])*0.1
     pr_g = np.mean([zones[z]['pore_score'] for z in zones])
 
     summary = summarize(ac_g, rd_g, oil_g, pr_g)
@@ -175,18 +172,20 @@ async def analyze_skin(file: UploadFile = File(...)):
     with open(adir/"result.json","w",encoding="utf-8") as f:
         json.dump(result,f,ensure_ascii=False,indent=2)
 
-    return JSONResponse({
+    return {
         "analysis_id": aid,
         "chi_so": result["scores"],
         "loai_da": s_type,
         "tom_tat_tinh_trang_da": summary
-    })
+    }
 
+# -------------------------
+# ENDPOINT: AI-SUGGESTION
+# -------------------------
 @app.post("/ai-suggestion")
 async def ai_suggestion(payload: dict):
     per_zone = payload.get("per_zone", False)
 
-    # Lấy điểm số từ result.json hoặc payload
     if "analysis_id" in payload:
         aid = payload["analysis_id"]
         path = BASE_TMP / aid / "result.json"
@@ -201,49 +200,40 @@ async def ai_suggestion(payload: dict):
         oil = float(payload["do_dau"])
         pr = float(payload["lo_chan_long"])
 
-    # prompt
     prompt = (
         f"Bạn là chuyên gia da liễu. "
-        f"Phân tích da: mụn={ac}, đỏ={rd}, dầu={oil}, lỗ chân lông={pr}. "
+        f"Phân tích da: mụn={ac}, đỏ={rd}, dầu={oil}, lcl={pr}. "
     )
     if per_zone:
-        prompt += "Hãy phân tích theo từng vùng (face zone). "
-    prompt += "Trả lời ngắn gọn, rõ ràng, tiếng Việt, có routine sáng/tối."
+        prompt += "Phân tích theo từng vùng. "
+    prompt += "Viết cực ngắn, dưới 80 từ, ưu tiên bullet points."
 
-    try:
-        model = genai.GenerativeModel("models/gemini-2.0-flash-lite-preview")
-        res = model.generate_content(prompt)
-        if hasattr(res, "text") and res.text:
-            return {"goi_y_AI": res.text}
-    except Exception as e:
-        print(">>> Flash Lite Preview lỗi → fallback Flash:", e)
+    models_chain = [
+        "models/gemini-2.0-flash-lite-preview",
+        "models/gemini-2.0-flash",
+        "models/gemini-2.5-flash"
+    ]
 
-    try:
-        model2 = genai.GenerativeModel("models/gemini-2.0-flash")
-        res2 = model2.generate_content(prompt)
-        if hasattr(res2, "text") and res2.text:
-            return {"goi_y_AI": res2.text}
-    except Exception as e:
-        print(">>> Flash lỗi → fallback 2.5 Flash:", e)
-
-    try:
-        model3 = genai.GenerativeModel("models/gemini-2.5-flash")
-        res3 = model3.generate_content(prompt)
-        if hasattr(res3, "text") and res3.text:
-            return {"goi_y_AI": res3.text}
-    except Exception as e:
-        print(">>> 2.5 Flash lỗi → offline:", e)
+    for m in models_chain:
+        try:
+            genai.configure(api_key=get_random_api_key())
+            model = genai.GenerativeModel(m)
+            res = model.generate_content(prompt)
+            if hasattr(res, "text") and res.text:
+                return {"goi_y_AI": res.text}
+        except Exception as e:
+            print(f">>> Model {m} lỗi → thử model tiếp theo:", e)
 
     offline = (
-        "AI hiện không khả dụng — gợi ý cơ bản:\n"
-        "- Rửa mặt 2 lần/ngày bằng sữa rửa mặt dịu nhẹ.\n"
-        "- Không nặn mụn.\n"
-        "- Dùng BHA hoặc Niacinamide (3–4 lần/tuần).\n"
-        "- Dưỡng ẩm phù hợp loại da.\n"
-        "- Thoa kem chống nắng SPF 50 mỗi ngày."
+        "AI tạm không khả dụng — gợi ý gọn:\n"
+        "- Rửa mặt 2 lần/ngày\n"
+        "- Không nặn mụn\n"
+        "- BHA/Niacinamide 3–4 lần/tuần\n"
+        "- Dưỡng ẩm phù hợp\n"
+        "- Chống nắng SPF 50"
     )
-
     return {"goi_y_AI": offline}
+
 
 @app.get("/")
 def home():
